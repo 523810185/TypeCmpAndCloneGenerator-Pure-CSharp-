@@ -824,8 +824,19 @@ namespace W3.TypeExtension
                 {
                     // 没有上下文，说明需要的Clone就是直接拷贝
                     // 这里代表的是最顶层的直接赋值（无意义），TODO.. 通过加上ref来使得参数能被正确赋值
-                    il.Emit(OpCodes.Ldarg_1);
-                    il.Emit(OpCodes.Starg, 0);
+                    // il.Emit(OpCodes.Ldarg_1);
+                    // il.Emit(OpCodes.Starg, 0);
+                    // fix Bug At 2022.9.24: 上面的有问题，可能参数只有1个；而且也需要考虑可能赋值给的对象是自己new出来的局部变量的情况
+                    // 这里的需求本质是，将对象参数赋值给原参数（可能是调用层的对象，也可能是自己的局部变量）
+                    LoadParm1();
+                    if(ctxParm0ID == -1) 
+                    {
+                        il.Emit(OpCodes.Starg, 0);
+                    }
+                    else 
+                    {
+                        il.Emit(OpCodes.Stloc, ctxParm0ID);
+                    }
                 }
             }
             /// <summary>
