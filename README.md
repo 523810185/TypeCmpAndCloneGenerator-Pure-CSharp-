@@ -40,7 +40,7 @@
 更新如下：
 1. 实现了对property的拷贝处理
 2. 修复了T[]类型的一些bug
-3. 修复了数组类型下对struct字段进行赋值的bug，例如 List<Position> list, 使用 list[i].x = val 的情况
+3. 修复了对struct数组的item的字段进行赋值时的bug，例如 `List<Vector3> list`, 使用 `list[i].x = val` 的情况，应当忽略字段，直接复制整个struct，如 `list[i] = target[i]`
 4. 修复了部分Unity类型下T[]类型字段的拷贝问题，原因在于Unity对外的数组一般使用property的形式进行处理，并且返回一份拷贝，导致T[]字段在设置item时失效（例如AnimationCurve的keys，类型为Keyframe[]）（现在的处理方式是将Unity类型下的T[]字段直接复制）
 
 新问题：
