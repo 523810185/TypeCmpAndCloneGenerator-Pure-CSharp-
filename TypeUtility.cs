@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using System.Linq;
 
 namespace W3.TypeExtension
 {
@@ -51,13 +52,23 @@ namespace W3.TypeExtension
         }
 
         /// <summary>
-        /// 返回是否是Unity的类型
+        /// 返回是否是UnityObject的子类型
         /// </summary>
         /// <param name="type"></param>
         /// <returns></returns>
-        public static bool IsUnityType(this Type type) 
+        public static bool IsUnityObjectType(this Type type) 
         {
             return typeof(UnityEngine.Object).IsAssignableFrom(type);
+        }
+
+        public static bool IsUnityType(this Type type) 
+        {
+            return type.Assembly.GetName().Name == "UnityEngine.CoreModule";
+        }
+
+        public static bool IsList(this Type type) 
+        {
+            return type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>);
         }
 
         /// <summary>
@@ -67,10 +78,9 @@ namespace W3.TypeExtension
         /// </summary>
         /// <param name="type"></param>
         /// <returns></returns>
-        public static bool IsList(this Type type) 
+        public static bool IsListOrArray(this Type type) 
         {
-            return type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>) 
-                || type.IsArray;
+            return type.IsList() || type.IsArray;
         }
 
         public static bool IsStructClass(this Type type) 
@@ -110,7 +120,7 @@ namespace W3.TypeExtension
         /// <returns></returns>
         public static Type GetListElementType(this Type type) 
         {
-            if(!type.IsList()) 
+            if(!type.IsListOrArray()) 
             {
                 Debug.LogErrorFormat(" GetListElementType 中传入了一个不是数组类型的type：{0}", type);
             }
@@ -510,7 +520,7 @@ namespace W3.TypeExtension
 
                 // 到这里说明两个List都不为null
                 // 开始比较列表个数是否相同
-                var listGetCountMethod = listType.GetMethod("get_Count");
+                var listGetCountMethod = listType.IsArray ? listType.GetMethod("get_Length") : listType.GetMethod("get_Count");
 
                 il.Emit(OpCodes.Ldloc, idList0);
                 il.Emit(OpCodes.Callvirt, listGetCountMethod);
@@ -531,7 +541,7 @@ namespace W3.TypeExtension
                         il.Emit(OpCodes.Ldloc, idList0Cnt);
                     }, 
                     (idLoopIter) => {
-                        var listGetItemMethod = listType.GetMethod("get_Item");
+                        var listGetItemMethod = listType.IsArray ? listType.GetMethod("Get") : listType.GetMethod("get_Item");
                         // 存储item0
                         il.Emit(OpCodes.Ldloc, idList0);
                         il.Emit(OpCodes.Ldloc, idLoopIter);
@@ -562,7 +572,7 @@ namespace W3.TypeExtension
             /// <param name="fiList"></param>
             void GenerateField(Type nowType, List<ILCtxItem> ilCtxList) 
             {
-                if(nowType.IsList())
+                if(nowType.IsListOrArray())
                 {
                     // Debug.Log(" IsListType " + nowType);
                     GenerateList(nowType, ilCtxList);
@@ -574,7 +584,7 @@ namespace W3.TypeExtension
                     GenerateBasicType(ilCtxList);
                 }
                 // Unity Type, 使用 op_Equality
-                else if(nowType.IsUnityType()) 
+                else if(nowType.IsUnityObjectType()) 
                 {
                     // Debug.Log(" Unity Type " + nowType);
                     GenerateHaveOpEqualType(nowType, ilCtxList);
@@ -978,7 +988,27 @@ namespace W3.TypeExtension
                     // Debug.Log(nowFi.Name + " 中的 " + field.Name);
                     var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = field.FieldType.IsStructClass() ? OpCodes.Ldflda : OpCodes.Ldfld; ilCtxItem.fi = field;
                     ilCtxList.Add(ilCtxItem);
-                    GenerateField(field.FieldType, ilCtxList);
+                    GenerateField(field.FieldType, ilCtxList, nowType);
+                    ilCtxList.RemoveAt(ilCtxList.Count - 1);
+                }
+                
+                var properties = nowType.GetProperties(); // 注意：这里只会拿出public的
+                foreach (var property in properties)
+                {
+                    if(!property.CanRead || !property.CanWrite) 
+                    {
+                        continue;
+                    }
+                    var getMi = property.GetMethod;
+                    var setMi = property.SetMethod;
+                    if(getMi == null || setMi == null) 
+                    {
+                        continue;
+                    }
+
+                    var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Callvirt; ilCtxItem.mi = getMi; ilCtxItem.miex = setMi;
+                    ilCtxList.Add(ilCtxItem);  
+                    GenerateField(property.PropertyType, ilCtxList, nowType);
                     ilCtxList.RemoveAt(ilCtxList.Count - 1);
                 }
 
@@ -994,7 +1024,7 @@ namespace W3.TypeExtension
                 var itemType = listType.GetListElementType();
                 if(itemType == null) 
                 {
-                    Debug.LogErrorFormat(" GetTypeCmp 的 GenerateList 中传入了一个无法生成的List类型：{0}", listType);
+                    Debug.LogErrorFormat(" GetTypeClone 的 GenerateList 中传入了一个无法生成的List类型：{0}", listType);
                     return;
                 }
 
@@ -1029,13 +1059,37 @@ namespace W3.TypeExtension
                 var listGetItemMethod = listType.GetMethod("get_Item");
                 var listSetItemMethod = listType.GetMethod("set_Item");
 
-                FieldInfo nowField = null;
-                if(ilCtxList != null && ilCtxList.Count > 0) 
+                if(listType.IsArray)
                 {
-                    nowField = ilCtxList[ilCtxList.Count - 1].fi;
+                    listGetCountMethod = listType.GetMethod("get_Length");
+                    listGetItemMethod = listType.GetMethod("Get");
+                    listSetItemMethod = listType.GetMethod("Set");
+                }
+
+                // FieldInfo nowField = null;
+                // if(ilCtxList != null && ilCtxList.Count > 0) 
+                // {
+                //     nowField = ilCtxList[ilCtxList.Count - 1].fi;
+                // }
+                ILCtxItem lastCtxListItem = ilCtxList.LastOrDefault();
+                void SetToFirstList()
+                {
+                    if(lastCtxListItem.fi != null) 
+                    {
+                        il.Emit(OpCodes.Stfld, lastCtxListItem.fi);
+                    }
+                    else if(lastCtxListItem.miex != null)
+                    {
+                        // 调用Set
+                        il.Emit(OpCodes.Callvirt, lastCtxListItem.miex);
+                    }
+                    else 
+                    {
+                        Debug.LogError($"尝试对一个没有上下文的FirstList调用Set");
+                    }
                 }
                 // TODO.. 这里没有像class一样考虑到上一层为List的情况；只考虑了上一层为class和为最顶层的情况
-                if(nowField == null) 
+                if(ilCtxList.Count == 0 || lastCtxListItem.fi == null && lastCtxListItem.miex == null) 
                 {
                     // Debug.LogErrorFormat("暂不支持最外层是List的结构，Type = {0}", listType);
                     // TODO.. 为参数0带上ref标记，使得即使其在null相关的操作时能被正确赋值
@@ -1204,7 +1258,8 @@ namespace W3.TypeExtension
                         // 为第一个set为null
                         RecursiveLoadParm0(ilCtxList);
                         il.Emit(OpCodes.Ldnull);
-                        il.Emit(OpCodes.Stfld, nowField);
+                        // il.Emit(OpCodes.Stfld, nowField);
+                        SetToFirstList();
                         il.Emit(OpCodes.Br, endLabel);
                     }
 
@@ -1219,9 +1274,11 @@ namespace W3.TypeExtension
                         il.Emit(OpCodes.Brtrue, endLabel);
                         // 否则，第一个List新建一个
                         RecursiveLoadParm0(ilCtxList);
-                        var listctor = listType.GetConstructor(new Type[]{});
-                        il.Emit(OpCodes.Newobj, listctor);
-                        il.Emit(OpCodes.Stfld, nowField);
+                        // var listctor = listType.GetConstructor(new Type[]{});
+                        // il.Emit(OpCodes.Newobj, listctor);
+                        il.CreateOneTypeToStackTop(listType);
+                        // il.Emit(OpCodes.Stfld, nowField);
+                        SetToFirstList();
                         il.Emit(OpCodes.Br, beginSetLabel);
                     }
 
@@ -1230,6 +1287,17 @@ namespace W3.TypeExtension
                 // 正式set部分
                 il.MarkLabel(beginSetLabel);
                 {
+                    // 如果是T[]而不是List，直接new一个长度相同的
+                    if(listType.IsArray) 
+                    {
+                        RecursiveLoadParm0(ilCtxList);
+                        RecursiveLoadParm1(ilCtxList, false);
+                        il.Emit(OpCodes.Ldlen);
+                        il.Emit(OpCodes.Conv_I4);
+                        il.Emit(OpCodes.Newarr, itemType);
+                        SetToFirstList();
+                    }
+                    
                     // 到这里说明两个List都不为null
                     // 使得两个list的数目相同
                     var itemctor = itemType.GetConstructor(new Type[]{});
@@ -1253,6 +1321,7 @@ namespace W3.TypeExtension
                     il.Emit(OpCodes.Brtrue, beginForLabel); // 数目相同的情况直接进入for
 
                     // 数目不同
+                    if(!listType.IsArray)
                     {
                         // 标签
                         var list0CntGreatlist1CntLabel = il.DefineLabel();
@@ -1348,7 +1417,7 @@ namespace W3.TypeExtension
                                 var ilCtxItem2 = new ILCtxItem(); ilCtxItem2.opCodes = OpCodes.Callvirt; ilCtxItem2.mi = listGetItemMethod; ilCtxItem2.miex = listSetItemMethod;
                                 ilCtxList.Add(ilCtxItem2);
                                 {
-                                    GenerateField(itemType, ilCtxList);
+                                    GenerateField(itemType, ilCtxList, listType);
                                 }
                                 ilCtxList.RemoveAt(ilCtxList.Count - 1);
                                 ilCtxList.RemoveAt(ilCtxList.Count - 1);
@@ -1366,23 +1435,31 @@ namespace W3.TypeExtension
             /// 比较一个field
             /// </summary>
             /// <param name="fiList"></param>
-            void GenerateField(Type nowType, List<ILCtxItem> ilCtxList) 
+            void GenerateField(Type nowType, List<ILCtxItem> ilCtxList, Type parentType) 
             {
-                if(nowType.IsList())
+                // Unity Object Type
+                if(nowType.IsUnityObjectType()) 
+                {
+                    // Debug.Log(" Unity Type " + nowType);
+                    GenerateStraightSetType(ilCtxList);
+                }
+                // 在Unity类型下的T[]，例如AnimationCurve的keys的类型Keyframe[]
+                // 此时，Unity的get方法一般会返回数组的拷贝，遍历item拷贝是没有意义的，那么此时只要整个数组拷贝过去即可
+                // 不过这里有个bug，正确流程应该是先get获得原数组的拷贝，然后拷贝目标数组，再把这个原数组的拷贝赋值回去，TODO.. 后面优化这个
+                else if(parentType != null && parentType.IsUnityType() && nowType.IsArray) 
+                {
+                    GenerateStraightSetType(ilCtxList);
+                }
+                // List or Array
+                else if(nowType.IsListOrArray())
                 {
                     // Debug.Log(" IsListType " + nowType);
                     GenerateList(nowType, ilCtxList);
                 }
-                // 基本类型
-                else if(nowType.IsBasicType() || nowType.IsEnum)
+                // 基本类型或者值类型
+                else if(nowType.IsStructClass() || nowType.IsBasicType() || nowType.IsEnum)
                 {
                     // Debug.Log(" IsBasicType " + nowType);
-                    GenerateStraightSetType(ilCtxList);
-                }
-                // Unity Type
-                else if(nowType.IsUnityType()) 
-                {
-                    // Debug.Log(" Unity Type " + nowType);
                     GenerateStraightSetType(ilCtxList);
                 }
                 // 其他一些带有 op_Equality 的（例如string，Vector3）
@@ -1405,7 +1482,7 @@ namespace W3.TypeExtension
                 }
             }
 
-            GenerateField(type, new List<ILCtxItem>());
+            GenerateField(type, new List<ILCtxItem>(), null);
 
             il.MarkLabel(lbRet);
             // 最后把变量id传回去
@@ -1461,7 +1538,7 @@ namespace W3.TypeExtension
 
                 GenCloneInner(il, type, ref localVarInt, idForRetAns, 1);
             }
-            else if(type.IsList() || type.IsClass)
+            else if(type.IsListOrArray() || type.IsClass)
             {
                 // 可以为null的类型
                 il.GenIfThenElse(
@@ -1568,7 +1645,7 @@ namespace W3.TypeExtension
                 il.Emit(OpCodes.Stloc, idForRetAns);
                 GenCloneInner(il, type, ref localVarInt, idForRetAns, 2);
             }
-            else if(type.IsList() || type.IsClass)
+            else if(type.IsListOrArray() || type.IsClass)
             {
                 // 可以为null的类型
                 il.GenIfThenElse(
@@ -1603,17 +1680,18 @@ namespace W3.TypeExtension
                             () =>
                             {
                                 // 为null，需要创建
-                                var ctor = type.GetConstructor(Type.EmptyTypes);
-                                if(ctor == null) 
-                                {
-                                    il.Emit(OpCodes.Ldtoken, type);
-                                    il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
-                                    il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
-                                }
-                                else 
-                                {
-                                    il.Emit(OpCodes.Newobj, ctor);
-                                }
+                                // var ctor = type.GetConstructor(Type.EmptyTypes);
+                                // if(ctor == null) 
+                                // {
+                                //     il.Emit(OpCodes.Ldtoken, type);
+                                //     il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
+                                //     il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
+                                // }
+                                // else 
+                                // {
+                                //     il.Emit(OpCodes.Newobj, ctor);
+                                // }
+                                il.CreateOneTypeToStackTop(type);
                                 il.Emit(OpCodes.Stloc, idForRetAns);
                             },
                             // else

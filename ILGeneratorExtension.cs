@@ -176,5 +176,22 @@ namespace ILUtility
 
             return il;
         }
+
+        public static ILGenerator CreateOneTypeToStackTop(this ILGenerator il, Type type) 
+        {
+            var ctor = type.GetConstructor(Type.EmptyTypes);
+            if(ctor == null) 
+            {
+                il.Emit(OpCodes.Ldtoken, type);
+                il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
+                il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
+            }
+            else 
+            {
+                il.Emit(OpCodes.Newobj, ctor);
+            }
+
+            return il;
+        }
     }
 }
