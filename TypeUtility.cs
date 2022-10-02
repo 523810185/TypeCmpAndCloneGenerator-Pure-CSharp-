@@ -1374,7 +1374,16 @@ namespace W3.TypeExtension
                                     }
                                     else 
                                     {
-                                        il.Emit(OpCodes.Newobj, itemctor);
+                                        if(!itemType.IsUnityObjectType())
+                                        {
+                                            // TODO.. 这里其实也可以只传入一个null，等到下层去操作，因为可能来源的这个位置是个null，那就白new了
+                                            il.Emit(OpCodes.Newobj, itemctor);
+                                        }
+                                        else 
+                                        {
+                                            // UnityObject的情况下，不能new（例如GameObject），设置一个null即可
+                                            il.Emit(OpCodes.Ldnull);
+                                        }
                                         il.Emit(OpCodes.Callvirt, listAddMethod);
                                     }
                                 }, 
