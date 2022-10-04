@@ -11,7 +11,7 @@ namespace W3.TypeExtension
     using ILUtility;
     using System.Runtime.Serialization;
 
-    public static class TypeExtension
+    internal static class TypeExtensionInner
     {
         // TODO.. 参照一下Odin
         private static List<Type> BASIC_TYPE_LIST = new List<Type>()
@@ -217,6 +217,10 @@ namespace W3.TypeExtension
                                 // Debug.Log("Ldfld, " + item.fi.Name);
                                 il.Emit(OpCodes.Ldfld, item.fi); 
                             }
+                            else if(item.opCodes == OpCodes.Callvirt) 
+                            {
+                                il.Emit(OpCodes.Callvirt, item.mi);
+                            }
                             else 
                             {
                                 Debug.LogErrorFormat("RecursiveLoadParm0 上下文item中混入了 无法解析的OpCodes：{0}", item.opCodes);
@@ -235,6 +239,10 @@ namespace W3.TypeExtension
                             else if(item.opCodes == OpCodes.Ldloc) 
                             {
                                 il.Emit(item.opCodes, item.varID0);
+                            }
+                            else if(item.opCodes == OpCodes.Callvirt) 
+                            {
+                                il.Emit(OpCodes.Callvirt, item.mi);
                             }
                             else 
                             {
@@ -271,6 +279,10 @@ namespace W3.TypeExtension
                             {
                                 il.Emit(OpCodes.Ldfld, item.fi); 
                             }
+                            else if(item.opCodes == OpCodes.Callvirt) 
+                            {
+                                il.Emit(OpCodes.Callvirt, item.mi);
+                            }
                             else 
                             {
                                 Debug.LogErrorFormat("RecursiveLoadParm1 上下文item中混入了 无法解析的OpCodes：{0}", item.opCodes);
@@ -289,6 +301,10 @@ namespace W3.TypeExtension
                             else if(item.opCodes == OpCodes.Ldloc) 
                             {
                                 il.Emit(item.opCodes, item.varID1);
+                            }
+                            else if(item.opCodes == OpCodes.Callvirt) 
+                            {
+                                il.Emit(OpCodes.Callvirt, item.mi);
                             }
                             else 
                             {
@@ -358,7 +374,7 @@ namespace W3.TypeExtension
             /// <summary>
             /// 比较一个class类型的field
             /// </summary>
-            void GenerateClass(Type nowType, List<ILCtxItem> ilCtxList) 
+            void GenerateClass(Type nowType, List<ILCtxItem> ilCtxList, HashSet<Type> fieldTypeCache) 
             {
                 // 标签
                 var endLabel = il.DefineLabel();
@@ -427,9 +443,56 @@ namespace W3.TypeExtension
                 {
                     var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Ldfld; ilCtxItem.fi = field;
                     ilCtxList.Add(ilCtxItem);
-                    GenerateField(field.FieldType, ilCtxList);
+                    var hasThisType = fieldTypeCache.Contains(field.FieldType);
+                    if(hasThisType) 
+                    {
+                        // 如果已经包含了这个类型，说明可能出现循环了，于是使用函数调用的形式，避免死循环
+                        RecursiveLoadParm0(ilCtxList);
+                        RecursiveLoadParm1(ilCtxList);
+                        il.Emit(OpCodes.Call, TypeInnerMethodInfo.CmpMethodInfo.MakeGenericMethod(field.FieldType));
+                        il.Emit(OpCodes.Brfalse, lbFalse);
+                    }
+                    else 
+                    {
+                        fieldTypeCache.Add(field.FieldType);
+                        GenerateField(field.FieldType, ilCtxList, fieldTypeCache);
+                        fieldTypeCache.Remove(field.FieldType);
+                    }
                     ilCtxList.RemoveAt(ilCtxList.Count - 1);
                 }
+
+                var properties = nowType.GetProperties(); // 注意：这里只会拿出public的
+                foreach (var property in properties)
+                {
+                    if(!property.CanRead) 
+                    {
+                        continue;
+                    }
+                    var getMi = property.GetMethod;
+                    if(getMi == null) 
+                    {
+                        continue;
+                    }
+
+                    var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Callvirt; ilCtxItem.mi = getMi;
+                    ilCtxList.Add(ilCtxItem);  
+                    bool hasThisType = fieldTypeCache.Contains(property.PropertyType);
+                    if(hasThisType) 
+                    {
+                        // 如果已经包含了这个类型，说明可能出现循环了，于是使用函数调用的形式，避免死循环
+                        RecursiveLoadParm0(ilCtxList);
+                        RecursiveLoadParm1(ilCtxList);
+                        il.Emit(OpCodes.Call, TypeInnerMethodInfo.CmpMethodInfo.MakeGenericMethod(property.PropertyType));
+                        il.Emit(OpCodes.Brfalse, lbFalse);
+                    }
+                    else 
+                    {
+                        fieldTypeCache.Add(property.PropertyType);
+                        GenerateField(property.PropertyType, ilCtxList, fieldTypeCache);
+                        fieldTypeCache.Remove(property.PropertyType);
+                    }
+                    ilCtxList.RemoveAt(ilCtxList.Count - 1);
+                } 
 
                 // 结束标签
                 il.MarkLabel(endLabel);
@@ -439,7 +502,7 @@ namespace W3.TypeExtension
             /// </summary>
             /// <param name="listType"></param>
             /// <param name="ilCtxList"></param>
-            void GenerateList(Type listType, List<ILCtxItem> ilCtxList) 
+            void GenerateList(Type listType, List<ILCtxItem> ilCtxList, HashSet<Type> fieldTypeCache) 
             {
                 var itemType = listType.GetListElementType();
                 if(itemType == null) 
@@ -556,7 +619,7 @@ namespace W3.TypeExtension
                         var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Ldloc; ilCtxItem.varID0 = idItem0; ilCtxItem.varID1 = idItem1;
                         ilCtxList.Add(ilCtxItem);
                         // 递归解析
-                        GenerateField(itemType, ilCtxList);
+                        GenerateField(itemType, ilCtxList, fieldTypeCache);
                         ilCtxList.RemoveAt(ilCtxList.Count - 1);
                     },
                     ref localVarInt);
@@ -570,12 +633,12 @@ namespace W3.TypeExtension
             /// 比较一个field
             /// </summary>
             /// <param name="fiList"></param>
-            void GenerateField(Type nowType, List<ILCtxItem> ilCtxList) 
+            void GenerateField(Type nowType, List<ILCtxItem> ilCtxList, HashSet<Type> fieldTypeCache) 
             {
                 if(nowType.IsListOrArray())
                 {
                     // Debug.Log(" IsListType " + nowType);
-                    GenerateList(nowType, ilCtxList);
+                    GenerateList(nowType, ilCtxList, fieldTypeCache);
                 }
                 // 基本类型
                 else if(nowType.IsBasicType() || nowType.IsEnum)
@@ -605,11 +668,11 @@ namespace W3.TypeExtension
                 {
                     // Debug.Log(" 递归生成 " + nowType);
                     // TODO.. 这里现在是给编辑器的序列化数据使用，所以class不会为null
-                    GenerateClass(nowType, ilCtxList);
+                    GenerateClass(nowType, ilCtxList, fieldTypeCache);
                 }
             }
 
-            GenerateField(type, new List<ILCtxItem>());
+            GenerateField(type, new List<ILCtxItem>(), new HashSet<Type>());
 
             // 默认压入true作为返回值
             {
@@ -852,7 +915,7 @@ namespace W3.TypeExtension
             /// <summary>
             /// 比较一个class类型的field
             /// </summary>
-            void GenerateClass(Type nowType, List<ILCtxItem> ilCtxList) 
+            void GenerateClass(Type nowType, List<ILCtxItem> ilCtxList, HashSet<Type> fieldTypeCache) 
             {
                 var endLabel = il.DefineLabel();
                 var beginLogicLabel = il.DefineLabel();
@@ -987,8 +1050,28 @@ namespace W3.TypeExtension
                 {
                     // Debug.Log(nowFi.Name + " 中的 " + field.Name);
                     var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = field.FieldType.IsStructClass() ? OpCodes.Ldflda : OpCodes.Ldfld; ilCtxItem.fi = field;
+                    bool hasThisType = fieldTypeCache.Contains(field.FieldType);
+                    if(hasThisType)
+                    {
+                        ilCtxItem.opCodes = OpCodes.Ldfld; // 因为此时是作为get用，所以ldfld即可
+                    }
                     ilCtxList.Add(ilCtxItem);
-                    GenerateField(field.FieldType, ilCtxList, nowType);
+                    if(hasThisType)
+                    {
+                        // 如果已经包含了这个类型，说明可能出现循环了，于是使用函数调用的形式，避免死循环
+                        RecursiveLoadParm0(ilCtxList);
+                        // class.field = clone(class.field, ori.field)
+                        RecursiveLoadParm0(ilCtxList, false);
+                        RecursiveLoadParm1(ilCtxList, false);
+                        il.Emit(OpCodes.Call, TypeInnerMethodInfo.CloneWithReturnAndTwoParmsMethodInfo.MakeGenericMethod(field.FieldType));
+                        il.Emit(OpCodes.Stfld, field);
+                    }
+                    else
+                    {
+                        fieldTypeCache.Add(field.FieldType);
+                        GenerateField(field.FieldType, ilCtxList, nowType, fieldTypeCache);
+                        fieldTypeCache.Remove(field.FieldType);
+                    }
                     ilCtxList.RemoveAt(ilCtxList.Count - 1);
                 }
                 
@@ -1008,7 +1091,23 @@ namespace W3.TypeExtension
 
                     var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Callvirt; ilCtxItem.mi = getMi; ilCtxItem.miex = setMi;
                     ilCtxList.Add(ilCtxItem);  
-                    GenerateField(property.PropertyType, ilCtxList, nowType);
+                    bool hasThisType = fieldTypeCache.Contains(property.PropertyType);
+                    if(hasThisType) 
+                    {
+                        // 如果已经包含了这个类型，说明可能出现循环了，于是使用函数调用的形式，避免死循环
+                        RecursiveLoadParm0(ilCtxList);
+                        // class.field = clone(class.field, ori.field)
+                        RecursiveLoadParm0(ilCtxList, false);
+                        RecursiveLoadParm1(ilCtxList, false);
+                        il.Emit(OpCodes.Call, TypeInnerMethodInfo.CloneWithReturnAndTwoParmsMethodInfo.MakeGenericMethod(property.PropertyType));
+                        il.Emit(OpCodes.Callvirt, setMi);
+                    }
+                    else 
+                    {
+                        fieldTypeCache.Add(property.PropertyType);
+                        GenerateField(property.PropertyType, ilCtxList, nowType, fieldTypeCache);
+                        fieldTypeCache.Remove(property.PropertyType);
+                    }
                     ilCtxList.RemoveAt(ilCtxList.Count - 1);
                 }
 
@@ -1019,7 +1118,7 @@ namespace W3.TypeExtension
             /// </summary>
             /// <param name="listType"></param>
             /// <param name="ilCtxList"></param>
-            void GenerateList(Type listType, List<ILCtxItem> ilCtxList) 
+            void GenerateList(Type listType, List<ILCtxItem> ilCtxList, HashSet<Type> fieldTypeCache) 
             {
                 var itemType = listType.GetListElementType();
                 if(itemType == null) 
@@ -1426,7 +1525,7 @@ namespace W3.TypeExtension
                                 var ilCtxItem2 = new ILCtxItem(); ilCtxItem2.opCodes = OpCodes.Callvirt; ilCtxItem2.mi = listGetItemMethod; ilCtxItem2.miex = listSetItemMethod;
                                 ilCtxList.Add(ilCtxItem2);
                                 {
-                                    GenerateField(itemType, ilCtxList, listType);
+                                    GenerateField(itemType, ilCtxList, listType, new HashSet<Type>());
                                 }
                                 ilCtxList.RemoveAt(ilCtxList.Count - 1);
                                 ilCtxList.RemoveAt(ilCtxList.Count - 1);
@@ -1444,7 +1543,7 @@ namespace W3.TypeExtension
             /// 比较一个field
             /// </summary>
             /// <param name="fiList"></param>
-            void GenerateField(Type nowType, List<ILCtxItem> ilCtxList, Type parentType) 
+            void GenerateField(Type nowType, List<ILCtxItem> ilCtxList, Type parentType, HashSet<Type> fieldTypeCache) 
             {
                 // Unity Object Type
                 if(nowType.IsUnityObjectType()) 
@@ -1463,10 +1562,10 @@ namespace W3.TypeExtension
                 else if(nowType.IsListOrArray())
                 {
                     // Debug.Log(" IsListType " + nowType);
-                    GenerateList(nowType, ilCtxList);
+                    GenerateList(nowType, ilCtxList, fieldTypeCache);
                 }
-                // 基本类型或者值类型
-                else if(nowType.IsStructClass() || nowType.IsBasicType() || nowType.IsEnum)
+                // 基本类型或者上层是数组的值类型（其实这里有问题，现在是为了解决struct下不能直接list[i].x = ..的bug，后面应该把item loc出来，复制以后再list[i]=item回去）
+                else if(nowType.IsStructClass() && parentType != null && parentType.IsListOrArray() || nowType.IsBasicType() || nowType.IsEnum)
                 {
                     // Debug.Log(" IsBasicType " + nowType);
                     GenerateStraightSetType(ilCtxList);
@@ -1487,11 +1586,11 @@ namespace W3.TypeExtension
                 {
                     // Debug.Log(" 递归生成 " + nowType);
                     // TODO.. 这里现在是给编辑器的序列化数据使用，所以class不会为null
-                    GenerateClass(nowType, ilCtxList);
+                    GenerateClass(nowType, ilCtxList, fieldTypeCache);
                 }
             }
 
-            GenerateField(type, new List<ILCtxItem>(), null);
+            GenerateField(type, new List<ILCtxItem>(), null, new HashSet<Type>());
 
             il.MarkLabel(lbRet);
             // 最后把变量id传回去
