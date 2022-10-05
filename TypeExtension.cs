@@ -6,8 +6,9 @@ namespace W3.TypeExtension
 {
     public static class TypeExtension
     {
-        public static T Clone<T>(this T from)
+        public static T Copy<T>(this T from)
         {
+            // Clone太容易重名了，甚至和 ICloneable 的 Clone 重名，还是换一个名字好了
             return TypeInnerMethodInfo.CloneWithReturn(from);
         }
 

@@ -13,6 +13,7 @@ namespace ILUtility
         // Debug.Log
         private static MethodInfo m_stUnityDebugLogMF = typeof(UnityEngine.Debug).GetMethod("Log", new Type[] {typeof(string)});
         private static MethodInfo m_stUnityDebugLogErrorMF = typeof(UnityEngine.Debug).GetMethod("LogError", new Type[] {typeof(string)});
+        private static FieldInfo m_stStringDotEmpty = typeof(string).GetField("Empty", BindingFlags.Static | BindingFlags.Public);
         public static ILGenerator GenUnityLog(this ILGenerator il, string logstr)
         {
             il.Emit(OpCodes.Ldstr, logstr);
@@ -182,9 +183,19 @@ namespace ILUtility
             var ctor = type.GetConstructor(Type.EmptyTypes);
             if(ctor == null) 
             {
-                il.Emit(OpCodes.Ldtoken, type);
-                il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
-                il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
+                if(type == typeof(string))
+                {
+                    // string很特殊，没有无参构造器
+                    // 用这个接口创建string比下面的接口快不少，单单对string的clone，调用单参数返回式clone，时间可以变成1/6
+                    il.Emit(OpCodes.Ldsfld, m_stStringDotEmpty);
+                }
+                else 
+                {
+                    il.Emit(OpCodes.Ldtoken, type);
+                    il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
+                    il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
+                    il.Emit(OpCodes.Castclass, type);
+                }
             }
             else 
             {

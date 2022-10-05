@@ -1501,8 +1501,8 @@ namespace W3.TypeExtension
                     // Debug.Log(" IsBasicType " + nowType);
                     GenerateStraightSetType(ilCtxList);
                 }
-                // 其他一些带有 op_Equality 的（例如string，Vector3）
-                else if(nowType.GetCurTypeOpEqualMethodInfoIncludeParent() != null)
+                // 其他一些带有 op_Equality 的（例如string，Vector3）-- 这里的想法应该是错的，不过可以先这么写
+                else if(nowType == typeof(string) || nowType.GetCurTypeOpEqualMethodInfoIncludeParent() != null)
                 {
                     // Debug.Log(" op_Equality ==== " + nowType);
                     GenerateStraightSetType(ilCtxList);
@@ -1599,17 +1599,19 @@ namespace W3.TypeExtension
                         // 参数不为null，为ret新建一个
                         // TODO.. 突然发现是不是要必须获取public的？，不然可能new不出来
                         // TODO.. T[]有构造器么？
-                        var ctor = type.GetConstructor(Type.EmptyTypes);
-                        if(ctor == null) 
-                        {
-                            il.Emit(OpCodes.Ldtoken, type);
-                            il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
-                            il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
-                        }
-                        else 
-                        {
-                            il.Emit(OpCodes.Newobj, ctor);
-                        }
+                        // var ctor = type.GetConstructor(Type.EmptyTypes);
+                        // if(ctor == null) 
+                        // {
+                        //     il.Emit(OpCodes.Ldtoken, type);
+                        //     il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
+                        //     il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
+                        //     il.Emit(OpCodes.Castclass, type);
+                        // }
+                        // else 
+                        // {
+                        //     il.Emit(OpCodes.Newobj, ctor);
+                        // }
+                        il.CreateOneTypeToStackTop(type);
                         il.Emit(OpCodes.Stloc, idForRetAns);
 
                         GenCloneInner(il, type, ref localVarInt, idForRetAns, 1);
