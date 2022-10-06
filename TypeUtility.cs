@@ -1495,8 +1495,8 @@ namespace W3.TypeExtension
                     // Debug.Log(" IsListType " + nowType);
                     GenerateList(nowType, ilCtxList, fieldTypeCache);
                 }
-                // 基本类型或者上层是数组的值类型（其实这里有问题，现在是为了解决struct下不能直接list[i].x = ..的bug，后面应该把item loc出来，复制以后再list[i]=item回去）
-                else if(nowType.IsStructClass() && parentType != null && parentType.IsListOrArray() || nowType.IsBasicType() || nowType.IsEnum)
+                // 基本类型
+                else if(nowType.IsBasicType() || nowType.IsEnum)
                 {
                     // Debug.Log(" IsBasicType " + nowType);
                     GenerateStraightSetType(ilCtxList);
