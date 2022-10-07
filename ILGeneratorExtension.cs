@@ -14,6 +14,8 @@ namespace ILUtility
         private static MethodInfo m_stUnityDebugLogMF = typeof(UnityEngine.Debug).GetMethod("Log", new Type[] {typeof(string)});
         private static MethodInfo m_stUnityDebugLogErrorMF = typeof(UnityEngine.Debug).GetMethod("LogError", new Type[] {typeof(string)});
         private static FieldInfo m_stStringDotEmpty = typeof(string).GetField("Empty", BindingFlags.Static | BindingFlags.Public);
+        private static MethodInfo m_stMathDotMinInt = typeof(Math).GetMethod("Min", new Type[]{typeof(int), typeof(int)});
+        private static MethodInfo m_stArrayDotCopy = typeof(Array).GetMethod("Copy", new Type[]{typeof(Array), typeof(Array), typeof(int)});
         public static ILGenerator GenUnityLog(this ILGenerator il, string logstr)
         {
             il.Emit(OpCodes.Ldstr, logstr);
@@ -73,6 +75,26 @@ namespace ILUtility
         {
             il.Emit(OpCodes.Ldc_I4, setVal);
             il.Emit(OpCodes.Stloc, idVarInt);
+
+            return il;
+        }
+
+        public static ILGenerator GenMin(this ILGenerator il, int idVarInt, Action loadVal1, Action loadVal2) 
+        {
+            loadVal1();
+            loadVal2();
+            il.Emit(OpCodes.Call, m_stMathDotMinInt);
+            il.Emit(OpCodes.Stloc, idVarInt);
+
+            return il;
+        }
+
+        public static ILGenerator GenArrayCopy(this ILGenerator il, int idSourceArray, int idDestArray, int idLen)
+        {
+            il.Emit(OpCodes.Ldloc, idSourceArray);
+            il.Emit(OpCodes.Ldloc, idDestArray);
+            il.Emit(OpCodes.Ldloc, idLen);
+            il.Emit(OpCodes.Call, m_stArrayDotCopy);
 
             return il;
         }
@@ -188,6 +210,13 @@ namespace ILUtility
                     // string很特殊，没有无参构造器
                     // 用这个接口创建string比下面的接口快不少，单单对string的clone，调用单参数返回式clone，时间可以变成1/6
                     il.Emit(OpCodes.Ldsfld, m_stStringDotEmpty);
+                }
+                else if(/*type.IsGenericType &&*/ type.IsArray && type.BaseType == typeof(System.Array))
+                {
+                    // T[]同理
+                    // 注意：T[] IsGenericType会为false，但是List<T>返回的是true
+                    il.Emit(OpCodes.Ldc_I4_0);
+                    il.Emit(OpCodes.Newarr, type.GetElementType());
                 }
                 else 
                 {

@@ -149,18 +149,18 @@ namespace W3.TypeExtension
         {
             public OpCode opCodes;
             public FieldInfo fi;
-            public MethodInfo mi, miex;
+            public MethodInfo mi, miex; // mi 一般是 get，miex 一般是 set
             public int varID0, varID1;
             public bool fromHere; // 如果这项为true，执行操作时，List会忽略掉传入的参数Action，并且从这项开始执行
 
-            public void DoIt(ILGenerator il, int parmID)
+            public void Expend(ILGenerator il, int parmID, bool isLast)
             {
                 var item = this;
                 if(item.opCodes == OpCodes.Ldfld || item.opCodes == OpCodes.Ldflda) 
                 {
                     il.Emit(OpCodes.Ldfld, item.fi); 
                 }
-                else if(item.opCodes == OpCodes.Ldloc) 
+                else if(item.opCodes == OpCodes.Ldloc || item.opCodes == OpCodes.Ldloca) 
                 {
                     if(parmID != 0 && parmID != 1) 
                     {
@@ -168,7 +168,10 @@ namespace W3.TypeExtension
                     }
                     else 
                     {
-                        il.Emit(item.opCodes, parmID == 0 ? item.varID0 : item.varID1);
+                        // 如果是最后一个，可能是在做cmp的处理，这时候是当做整体使用的，不使用ldloc；
+                        // 否则，如果是加载struct的域时，必须使用ldloca取地址
+                        var opCodes = isLast ? OpCodes.Ldloc : item.opCodes;
+                        il.Emit(opCodes, parmID == 0 ? item.varID0 : item.varID1);
                     }
                 }
                 else if(item.opCodes == OpCodes.Callvirt) 
@@ -180,6 +183,23 @@ namespace W3.TypeExtension
                     Debug.LogErrorFormat("ILCtxItem 上下文item中混入了 无法解析的OpCodes：{0}", item.opCodes);
                 }
             } 
+
+            // public void CallSet(ILGenerator il)
+            // {
+            //     var item = this;
+            //     if(item.opCodes == OpCodes.Ldfld || item.opCodes == OpCodes.Ldflda) 
+            //     {
+            //         il.Emit(OpCodes.Stfld, item.fi); 
+            //     }
+            //     else if(item.opCodes == OpCodes.Callvirt) 
+            //     {
+            //         il.Emit(OpCodes.Callvirt, item.miex);
+            //     }
+            //     else 
+            //     {
+            //         Debug.LogErrorFormat("ILCtxItem CallSet中混入了 无法解析的OpCodes：{0}", item.opCodes);
+            //     }
+            // }
         }
         private class CtxItemList : List<ILCtxItem> 
         {
@@ -210,7 +230,8 @@ namespace W3.TypeExtension
                 for(int i=Math.Max(0, lastFromHereID);i<listCnt;i++)
                 {
                     var item = ilCtxList[i];
-                    item.DoIt(il, parmID);
+                    // isLast这项目前只有cmp会做区分；数目不能考虑ignore，因为可能在clone中会忽略最后一个，倒数第二个是加载整个struct的item，最后一个是get&set，此时struct必须取地址使用ldloca
+                    item.Expend(il, parmID, i == ilCtxList.Count-1/*这里应该使用原本数目的最后一个，不考虑ignore*/);
                 }
             }
         }
@@ -570,7 +591,7 @@ namespace W3.TypeExtension
                         il.Emit(OpCodes.Callvirt, listGetItemMethod);
                         il.Emit(OpCodes.Stloc, idItem1);
                         // 构建item上下文
-                        var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Ldloc; ilCtxItem.varID0 = idItem0; ilCtxItem.varID1 = idItem1; ilCtxItem.fromHere = true;
+                        var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = itemType.IsStructClass() ? OpCodes.Ldloca : OpCodes.Ldloc; ilCtxItem.varID0 = idItem0; ilCtxItem.varID1 = idItem1; ilCtxItem.fromHere = true;
                         ilCtxList.Add(ilCtxItem);
                         // 递归解析
                         GenerateField(itemType, ilCtxList, fieldTypeCache);
@@ -777,12 +798,21 @@ namespace W3.TypeExtension
             {
                 if(ilCtxList != null && ilCtxList.Count > 0) 
                 {
+                    // Set
+                    var lastItem = ilCtxList[ilCtxList.Count - 1];
+                    if(lastItem.opCodes == OpCodes.Ldloc || lastItem.opCodes == OpCodes.Ldloca)
+                    {
+                        // 这里说明在数组下的item类型是基本类型，那么直接赋值
+                        // 注意：如果是class下的结构，最后一个必然是ldfld而不是ldloc
+                        il.Emit(OpCodes.Ldloc, lastItem.varID1);
+                        il.Emit(OpCodes.Stloc, lastItem.varID0);
+                        return;
+                    }
+
                     // 加载参数0，并获取对应field
                     RecursiveLoadParm0(ilCtxList);
                     // 加载参数1，并获取对应field
                     RecursiveLoadParm1(ilCtxList);
-                    // Set
-                    var lastItem = ilCtxList[ilCtxList.Count - 1];
                     // 如果最后一个上下文是Ldfld，说明是为一个field赋值
                     if(lastItem.opCodes == OpCodes.Ldfld || lastItem.opCodes == OpCodes.Ldflda) 
                     {
@@ -793,10 +823,10 @@ namespace W3.TypeExtension
                     {
                         MakeSetItem(lastItem.mi, lastItem.miex);
                     }
-                    else if(lastItem.opCodes == OpCodes.Ldloc)
-                    {
-                        // 这里是数组的新写法，直接无视即可
-                    }
+                    // else if(lastItem.opCodes == OpCodes.Ldloc)
+                    // {
+                    //     // 这里是数组的新写法，直接无视即可
+                    // }
                     else 
                     {
                         Debug.LogErrorFormat("GenerateStraightSetType 中 传入了无法解析的 OpCodes {0}。", lastItem.opCodes);
@@ -876,20 +906,29 @@ namespace W3.TypeExtension
                                     }
                                     else
                                     {
-                                        RecursiveLoadParm0(ilCtxList);
-                                        il.Emit(OpCodes.Newobj, ctor);
-
                                         var lastItem = ilCtxList[ilCtxList.Count - 1];
-                                        // 如果最后一个上下文是Ldfld，那么说明不是List的内部成员
-                                        if (lastItem.opCodes == OpCodes.Ldfld)
+                                        // 数组的新写法
+                                        if(lastItem.opCodes == OpCodes.Ldloc || lastItem.opCodes == OpCodes.Ldloca) 
                                         {
-                                            il.Emit(OpCodes.Stfld, lastItem.fi);
+                                            il.Emit(OpCodes.Newobj, ctor);
+                                            // 把局部变量重写一下
+                                            il.Emit(OpCodes.Stloc, lastItem.varID0);
                                         }
-                                        // 是List成员
-                                        else if(lastItem.opCodes == OpCodes.Callvirt)
+                                        else 
                                         {
-                                            // set item
-                                            il.Emit(OpCodes.Callvirt, lastItem.miex);
+                                            RecursiveLoadParm0(ilCtxList);
+                                            il.Emit(OpCodes.Newobj, ctor);
+                                            // 如果最后一个上下文是Ldfld，那么说明不是List的内部成员
+                                            if (lastItem.opCodes == OpCodes.Ldfld)
+                                            {
+                                                il.Emit(OpCodes.Stfld, lastItem.fi);
+                                            }
+                                            // 是List成员（废弃，数组使用Ldloc来做了）
+                                            else if(lastItem.opCodes == OpCodes.Callvirt)
+                                            {
+                                                // set item
+                                                il.Emit(OpCodes.Callvirt, lastItem.miex);
+                                            }
                                         }
                                         // 进入正式逻辑
                                         il.Emit(OpCodes.Br, beginLogicLabel);
@@ -926,21 +965,32 @@ namespace W3.TypeExtension
                                     }
                                     else
                                     {
-                                        RecursiveLoadParm0(ilCtxList);
-                                        il.Emit(OpCodes.Ldnull);
 
                                         var lastItem = ilCtxList[ilCtxList.Count - 1];
-                                        // 如果最后一个上下文是Ldfld，那么说明不是List的内部成员
-                                        if (lastItem.opCodes == OpCodes.Ldfld)
+                                        // 数组的新写法
+                                        if(lastItem.opCodes == OpCodes.Ldloc || lastItem.opCodes == OpCodes.Ldloca) 
                                         {
-                                            il.Emit(OpCodes.Stfld, lastItem.fi);
+                                            il.Emit(OpCodes.Ldnull);
+                                            // 把局部变量重写一下
+                                            il.Emit(OpCodes.Stloc, lastItem.varID0);
                                         }
-                                        // 是List成员
-                                        else if (lastItem.opCodes == OpCodes.Callvirt)
+                                        else 
                                         {
-                                            // set item
-                                            il.Emit(OpCodes.Callvirt, lastItem.miex);
+                                            RecursiveLoadParm0(ilCtxList);
+                                            il.Emit(OpCodes.Ldnull);
+                                            // 如果最后一个上下文是Ldfld，那么说明不是List的内部成员
+                                            if (lastItem.opCodes == OpCodes.Ldfld)
+                                            {
+                                                il.Emit(OpCodes.Stfld, lastItem.fi);
+                                            }
+                                            // 是List成员（废弃，数组使用Ldloc来做了）
+                                            else if (lastItem.opCodes == OpCodes.Callvirt)
+                                            {
+                                                // set item
+                                                il.Emit(OpCodes.Callvirt, lastItem.miex);
+                                            }
                                         }
+
                                         // 把第一个参数变为null以后就可以结束了，因为null算是已经拷贝完了
                                         il.Emit(OpCodes.Br, endLabel);
                                     }
@@ -1093,11 +1143,11 @@ namespace W3.TypeExtension
                     }
                     else 
                     {
-                        Debug.LogError($"尝试对一个没有上下文的FirstList调用Set");
+                        Debug.LogError($"尝试对一个没有上下文的FirstList调用Set, OpCodes: {lastCtxListItem.opCodes}");
                     }
                 }
                 // TODO.. 这里没有像class一样考虑到上一层为List的情况；只考虑了上一层为class和为最顶层的情况
-                if(ilCtxList.Count == 0 || lastCtxListItem.fi == null && lastCtxListItem.miex == null) 
+                if(ilCtxList.Count == 0 /*|| lastCtxListItem.fi == null && lastCtxListItem.miex == null*/) // TODO.. 这里后面两个能注掉？
                 {
                     // Debug.LogErrorFormat("暂不支持最外层是List的结构，Type = {0}", listType);
                     // TODO.. 为参数0带上ref标记，使得即使其在null相关的操作时能被正确赋值
@@ -1280,6 +1330,7 @@ namespace W3.TypeExtension
                         il.Emit(OpCodes.Ceq);
                         // 如果第二个也是null，表示双方是相同的，直接退出了
                         il.Emit(OpCodes.Brtrue, endLabel);
+                        // TODO.. 这里如果是T[]的话可以优化掉这个创建
                         // 否则，第一个List新建一个
                         RecursiveLoadParm0(ilCtxList);
                         // var listctor = listType.GetConstructor(new Type[]{});
@@ -1298,20 +1349,75 @@ namespace W3.TypeExtension
                     // 如果是T[]而不是List，直接new一个长度相同的
                     if(listType.IsArray) 
                     {
-                        RecursiveLoadParm0(ilCtxList);
+                        // 申明这部分需要的局部变量
+                        var idTempList = localVarInt++;
+                        il.DeclareLocal(listType);
+                        var idMinLen = localVarInt++;
+                        il.DeclareLocal(typeof(int));
+                        // RecursiveLoadParm0(ilCtxList);
+                        // 利用list1的长度new出一个T[]
                         RecursiveLoadParm1(ilCtxList, false);
                         il.Emit(OpCodes.Ldlen);
                         il.Emit(OpCodes.Conv_I4);
                         il.Emit(OpCodes.Newarr, itemType);
-                        SetToFirstList();
+                        // 存储到局部变量里面
+                        il.Emit(OpCodes.Stloc, idTempList);
+                        // 获取MinLen
+                        il.GenMin(
+                            idMinLen,
+                            () => {
+                                RecursiveLoadParm0(ilCtxList, false);
+                                il.Emit(OpCodes.Ldlen);
+                                il.Emit(OpCodes.Conv_I4);
+                            },
+                            () => {
+                                RecursiveLoadParm1(ilCtxList, false);
+                                il.Emit(OpCodes.Ldlen);
+                                il.Emit(OpCodes.Conv_I4);
+                            }
+                        );
+                        // for把list0原来的值拿过来
+                        // il.GenFor(
+                        //     loopCntFc: () => {
+                        //         il.Emit(OpCodes.Ldloc, idMinLen);
+                        //     },
+                        //     forBodyFc: (idLoopIter) => {
+                        //         // load tempList
+                        //         il.Emit(OpCodes.Ldloc, idTempList);
+                        //         // tempList[i] = item --> set_item(tempList, i, list0[i]);
+                        //         {
+                        //             // i
+                        //             il.Emit(OpCodes.Ldloc, idLoopIter);
+                        //             // item list0.get(i)
+                        //             RecursiveLoadParm0(ilCtxList, false);
+                        //             il.Emit(OpCodes.Ldloc, idLoopIter);
+                        //             il.Emit(OpCodes.Callvirt, listGetItemMethod);
+                        //         }
+                        //         il.Emit(OpCodes.Callvirt, listSetItemMethod);
+                        //     },
+                        //     ref localVarInt
+                        // );
+                        // 直接调用 Array.Copy 会快一些
+                        RecursiveLoadParm0(ilCtxList, false);
+                        il.Emit(OpCodes.Stloc, idList0);
+                        il.GenArrayCopy(idList0, idTempList, idMinLen);
+                        // 赋值给list0
+                        // SetToFirstList();
+                        // 存到loc变量里
+                        il.Emit(OpCodes.Ldloc, idTempList);
+                        il.Emit(OpCodes.Stloc, idList0);
                     }
                     
                     // 到这里说明两个List都不为null
                     // 使得两个list的数目相同
                     var itemctor = itemType.GetConstructor(new Type[]{});
                     // 注意，不能直接拿原来的变量，因为可能之前的局部变量是null，现在新建过了，因此现在要重新获取list
-                    RecursiveLoadParm0(ilCtxList, false);
-                    il.Emit(OpCodes.Stloc, idList0);
+                    if(!listType.IsArray) 
+                    {
+                        // T[]不用再一路get获取了，因为流程不一样，上面额外进行了操作
+                        RecursiveLoadParm0(ilCtxList, false);
+                        il.Emit(OpCodes.Stloc, idList0);
+                    }
                     RecursiveLoadParm1(ilCtxList, false);
                     il.Emit(OpCodes.Stloc, idList1);
 
@@ -1439,11 +1545,13 @@ namespace W3.TypeExtension
                                 il.Emit(OpCodes.Callvirt, listGetItemMethod);
                                 il.Emit(OpCodes.Stloc, idItem1);
                                 // 构建item上下文
-                                var ilCtxItem1 = new ILCtxItem(); ilCtxItem1.opCodes = OpCodes.Ldloc; ilCtxItem1.varID0 = idItem0; ilCtxItem1.varID1 = idItem1; ilCtxItem1.fromHere = true;
+                                var ilCtxItem1 = new ILCtxItem(); ilCtxItem1.opCodes = itemType.IsStructClass() ? OpCodes.Ldloca : OpCodes.Ldloc; ilCtxItem1.varID0 = idItem0; ilCtxItem1.varID1 = idItem1; ilCtxItem1.fromHere = true;
+                                ilCtxList.Add(ilCtxItem1);
                                 {
                                     // 内部复制
                                     GenerateField(itemType, ilCtxList, listType, fieldTypeCache);
                                 }
+                                ilCtxList.RemoveAt(ilCtxList.Count - 1);
                                 // 令 list0[i] = item0 --> set(i, item)
                                 il.Emit(OpCodes.Ldloc, idList0);
                                 il.Emit(OpCodes.Ldloc, idLoopIter);
@@ -1462,6 +1570,13 @@ namespace W3.TypeExtension
                                 // ilCtxList.RemoveAt(ilCtxList.Count - 1);
                             }, 
                             ref localVarInt);
+                        // 这里最后要把 loc 的 idList0 set回去，因为可能是get拿过来的，不是同一个引用
+                        if(ilCtxList.Count > 0) 
+                        {
+                            RecursiveLoadParm0(ilCtxList);
+                            il.Emit(OpCodes.Ldloc, idList0);
+                            SetToFirstList();
+                        }
                     }
                 }
 
@@ -1482,13 +1597,14 @@ namespace W3.TypeExtension
                     // Debug.Log(" Unity Type " + nowType);
                     GenerateStraightSetType(ilCtxList);
                 }
-                // 在Unity类型下的T[]，例如AnimationCurve的keys的类型Keyframe[]
-                // 此时，Unity的get方法一般会返回数组的拷贝，遍历item拷贝是没有意义的，那么此时只要整个数组拷贝过去即可
-                // 不过这里有个bug，正确流程应该是先get获得原数组的拷贝，然后拷贝目标数组，再把这个原数组的拷贝赋值回去，TODO.. 后面优化这个
-                else if(parentType != null && parentType.IsUnityType() && nowType.IsArray) 
-                {
-                    GenerateStraightSetType(ilCtxList);
-                }
+                // 下面已经fix
+                // // 在Unity类型下的T[]，例如AnimationCurve的keys的类型Keyframe[]
+                // // 此时，Unity的get方法一般会返回数组的拷贝，遍历item拷贝是没有意义的，那么此时只要整个数组拷贝过去即可
+                // // 不过这里有个bug，正确流程应该是先get获得原数组的拷贝，然后拷贝目标数组，再把这个原数组的拷贝赋值回去，TODO.. 后面优化这个
+                // else if(parentType != null && parentType.IsUnityType() && nowType.IsArray) 
+                // {
+                //     GenerateStraightSetType(ilCtxList);
+                // }
                 // List or Array
                 else if(nowType.IsListOrArray())
                 {
