@@ -158,7 +158,7 @@ namespace W3.TypeExtension
                 var item = this;
                 if(item.opCodes == OpCodes.Ldfld || item.opCodes == OpCodes.Ldflda) 
                 {
-                    il.Emit(OpCodes.Ldfld, item.fi); 
+                    il.Emit(item.opCodes, item.fi); 
                 }
                 else if(item.opCodes == OpCodes.Ldloc || item.opCodes == OpCodes.Ldloca) 
                 {
@@ -416,7 +416,7 @@ namespace W3.TypeExtension
 
                 foreach (var field in nowType.GetFields(BindingFlags.Public | BindingFlags.Instance))
                 {
-                    var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = OpCodes.Ldfld; ilCtxItem.fi = field;
+                    var ilCtxItem = new ILCtxItem(); ilCtxItem.opCodes = field.FieldType.IsStructClass() ? OpCodes.Ldflda : OpCodes.Ldfld; ilCtxItem.fi = field;
                     ilCtxList.Add(ilCtxItem);
                     var hasThisType = fieldTypeCache.Contains(field.FieldType);
                     if(hasThisType) 
