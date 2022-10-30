@@ -203,7 +203,7 @@ namespace W3.TypeExtension
         }
         private class CtxItemList : List<ILCtxItem> 
         {
-            public void RecursiveLoadParm(ILGenerator il, Action loadParm, int parmID, int ignoreLastCnt = 0) 
+            public void RecursiveLoadParm(ILGenerator il, Action<bool> loadParm, int parmID, int ignoreLastCnt = 0) 
             {
                 if(parmID != 0 && parmID != 1) 
                 {
@@ -225,7 +225,7 @@ namespace W3.TypeExtension
                 // 如果是从头开始的话，就需要加载根节点的参数
                 if(lastFromHereID == -1) 
                 {
-                    loadParm();
+                    loadParm(ilCtxList.Count == 0);
                 }
                 for(int i=Math.Max(0, lastFromHereID);i<listCnt;i++)
                 {
@@ -262,16 +262,20 @@ namespace W3.TypeExtension
             /// <summary>
             /// 加载参数0
             /// </summary>
-            void LoadParm0()
+            void LoadParm0(bool isLast)
             {
-                il.Emit(OpCodes.Ldarg_0);
+                var opCodes = isLast ? OpCodes.Ldarg
+                    : type.IsStructClass() ? OpCodes.Ldarga : OpCodes.Ldarg; 
+                il.Emit(opCodes, 0);
             }
             /// <summary>
             /// 加载参数1
             /// </summary>
-            void LoadParm1()
+            void LoadParm1(bool isLast)
             {
-                il.Emit(OpCodes.Ldarg_1);
+                var opCodes = isLast ? OpCodes.Ldarg
+                    : type.IsStructClass() ? OpCodes.Ldarga : OpCodes.Ldarg; 
+                il.Emit(opCodes, 1);
             }
             /// <summary>
             /// 递归加载参数0
@@ -732,23 +736,29 @@ namespace W3.TypeExtension
             /// <summary>
             /// 加载参数0
             /// </summary>
-            void LoadParm0()
+            void LoadParm0(bool isLast)
             {
                 if(ctxParm0ID == -1) 
                 {
-                    il.Emit(type.IsStructClass() ? OpCodes.Ldarga : OpCodes.Ldarg, 0);       
+                    var opCodes = isLast ? OpCodes.Ldarg 
+                        : type.IsStructClass() ? OpCodes.Ldarga : OpCodes.Ldarg;
+                    il.Emit(opCodes, 0);       
                 }
                 else 
                 {
-                    il.Emit(type.IsStructClass() ? OpCodes.Ldloca : OpCodes.Ldloc, ctxParm0ID);
+                    var opCodes = isLast ? OpCodes.Ldloc
+                        : type.IsStructClass() ? OpCodes.Ldloca : OpCodes.Ldloc;
+                    il.Emit(opCodes, ctxParm0ID);
                 }
             }
             /// <summary>
             /// 加载参数1
             /// </summary>
-            void LoadParm1()
+            void LoadParm1(bool isLast)
             {
-                il.Emit(OpCodes.Ldarg, parmCnt - 1);
+                var opCodes = isLast ? OpCodes.Ldarg 
+                    : type.IsStructClass() ? OpCodes.Ldarga : OpCodes.Ldarg;
+                il.Emit(opCodes, parmCnt - 1);
             }
             /// <summary>
             /// 为普通field赋值
@@ -840,7 +850,7 @@ namespace W3.TypeExtension
                     // il.Emit(OpCodes.Starg, 0);
                     // fix Bug At 2022.9.24: 上面的有问题，可能参数只有1个；而且也需要考虑可能赋值给的对象是自己new出来的局部变量的情况
                     // 这里的需求本质是，将对象参数赋值给原参数（可能是调用层的对象，也可能是自己的局部变量）
-                    LoadParm1();
+                    LoadParm1(isLast: true);
                     if(ctxParm0ID == -1) 
                     {
                         il.Emit(OpCodes.Starg, 0);
@@ -1184,7 +1194,7 @@ namespace W3.TypeExtension
                         // if
                         () => 
                         {
-                            il.CompareWithNull(() => {LoadParm0();});
+                            il.CompareWithNull(() => {LoadParm0(isLast: true);});
                         },
                         // then
                         () => 
@@ -1194,7 +1204,7 @@ namespace W3.TypeExtension
                                 // if
                                 () => 
                                 {
-                                    il.CompareWithNull(() => {LoadParm1();});
+                                    il.CompareWithNull(() => {LoadParm1(isLast: true);});
                                 },
                                 // then
                                 () => 
@@ -1233,7 +1243,7 @@ namespace W3.TypeExtension
                                 // if
                                 () => 
                                 {
-                                    il.CompareWithNull(() => {LoadParm1();});
+                                    il.CompareWithNull(() => {LoadParm1(isLast: true);});
                                 },
                                 // then
                                 () => 
@@ -1488,12 +1498,13 @@ namespace W3.TypeExtension
                                     }
                                     else 
                                     {
-                                        if(!itemType.IsUnityObjectType())
-                                        {
-                                            // TODO.. 这里其实也可以只传入一个null，等到下层去操作，因为可能来源的这个位置是个null，那就白new了
-                                            il.Emit(OpCodes.Newobj, itemctor);
-                                        }
-                                        else 
+                                        // 这里有bug，需要根据来源多态的类型去new，所以这里直接先挂一个null即可
+                                        // if(!itemType.IsUnityObjectType())
+                                        // {
+                                        //     // TODO.. 这里其实也可以只传入一个null，等到下层去操作，因为可能来源的这个位置是个null，那就白new了
+                                        //     il.Emit(OpCodes.Newobj, itemctor);
+                                        // }
+                                        // else 
                                         {
                                             // UnityObject的情况下，不能new（例如GameObject），设置一个null即可
                                             il.Emit(OpCodes.Ldnull);
@@ -1544,14 +1555,24 @@ namespace W3.TypeExtension
                                 il.Emit(OpCodes.Ldloc, idLoopIter);
                                 il.Emit(OpCodes.Callvirt, listGetItemMethod);
                                 il.Emit(OpCodes.Stloc, idItem1);
-                                // 构建item上下文
-                                var ilCtxItem1 = new ILCtxItem(); ilCtxItem1.opCodes = itemType.IsStructClass() ? OpCodes.Ldloca : OpCodes.Ldloc; ilCtxItem1.varID0 = idItem0; ilCtxItem1.varID1 = idItem1; ilCtxItem1.fromHere = true;
-                                ilCtxList.Add(ilCtxItem1);
+                                // // 构建item上下文
+                                // var ilCtxItem1 = new ILCtxItem(); ilCtxItem1.opCodes = itemType.IsStructClass() ? OpCodes.Ldloca : OpCodes.Ldloc; ilCtxItem1.varID0 = idItem0; ilCtxItem1.varID1 = idItem1; ilCtxItem1.fromHere = true;
+                                // ilCtxList.Add(ilCtxItem1);
+                                // {
+                                //     // 内部复制
+                                //     GenerateField(itemType, ilCtxList, listType, fieldTypeCache);
+                                // }
+                                // ilCtxList.RemoveAt(ilCtxList.Count - 1);
+                                // 多态复制List的item
                                 {
-                                    // 内部复制
-                                    GenerateField(itemType, ilCtxList, listType, fieldTypeCache);
+                                    il.Emit(OpCodes.Ldloc, idItem0);
+                                    il.Emit(OpCodes.Ldloc, idItem1);
+                                    // il.Emit(OpCodes.Ldloc, idItem1);
+                                    // il.Emit(OpCodes.Callvirt, ILGeneratorExtension.GetTypeMethodInfo);
+                                    // clone(to, from/*, type*/);
+                                    il.Emit(OpCodes.Call, TypeInnerMethodInfo.CloneWithReturnAndTwoParmsMethodInfo_OfGenericType.MakeGenericMethod(itemType));
+                                    il.Emit(OpCodes.Stloc, idItem0);
                                 }
-                                ilCtxList.RemoveAt(ilCtxList.Count - 1);
                                 // 令 list0[i] = item0 --> set(i, item)
                                 il.Emit(OpCodes.Ldloc, idList0);
                                 il.Emit(OpCodes.Ldloc, idLoopIter);
@@ -1868,6 +1889,112 @@ namespace W3.TypeExtension
 
             Func<T, T, T> clone = dm.CreateDelegate(typeof(Func<T, T, T>)) as Func<T, T, T>;
             m_mapTypeCloneWithReturnAndTwoParmsCache.Add(type, clone);
+            return clone;
+        }
+
+        public static Func<T, T, T> GetTypeCloneWithReturnAndTwoParmsOfType<T>(Type type)
+        {
+            var showType = typeof(T);
+            var dm = new DynamicMethod(type.Name + "TypeUtility", showType, new Type[]{showType, showType}, typeof(TypeUtility).Module, true);
+            var il = dm.GetILGenerator();
+            Label lbRet = il.DefineLabel();
+            int localVarInt = 0; // 记录局部变量使用的id
+            var idForRetAns = localVarInt++;
+            il.DeclareLocal(type);
+            
+            /// <summary>
+            /// 加载参数0
+            /// </summary>
+            void LoadParm0()
+            {
+                il.Emit(OpCodes.Ldarg_0);
+            }
+            /// <summary>
+            /// 加载参数1
+            /// </summary>
+            void LoadParm1()
+            {
+                il.Emit(OpCodes.Ldarg_1);
+            }
+
+            if(type.IsBasicType()) 
+            {
+                // 基本类型，把参数直接储存
+                LoadParm1();
+                il.Emit(OpCodes.Stloc, idForRetAns);
+            }
+            else if(type.IsStructClass()) 
+            {
+                // struct类型，不会为null
+                LoadParm0();
+                il.Emit(OpCodes.Stloc, idForRetAns);
+                GenCloneInner(il, type, ref localVarInt, idForRetAns, 2);
+            }
+            else if(type.IsListOrArray() || type.IsClass)
+            {
+                // 可以为null的类型
+                il.GenIfThenElse(
+                    // if（尝试比较第二个参数，也就是来源是否为null）
+                    () => 
+                    {
+                        il.CompareWithNull(() => {LoadParm1();});
+                    },
+                    // then
+                    () => 
+                    {
+                        // 来源为null，那么返回一个null即可
+                        il.Emit(OpCodes.Ldnull);
+                        il.Emit(OpCodes.Stloc, idForRetAns);
+                    },
+                    // else
+                    () =>
+                    {
+                        // 来源不为null，那么需要保证第一个参数不为null
+                        // TODO.. 突然发现是不是要必须获取public的？，不然可能new不出来
+                        // TODO.. T[]有构造器么？
+                        // 现存储第一个参数到ret上
+                        LoadParm0();
+                        il.Emit(OpCodes.Stloc, idForRetAns);
+                        il.GenIfThenElse(
+                            // if
+                            () => 
+                            {
+                                il.CompareWithNull(() => {il.Emit(OpCodes.Ldloc, idForRetAns);});
+                            },
+                            // then
+                            () =>
+                            {
+                                // 为null，需要创建
+                                // var ctor = type.GetConstructor(Type.EmptyTypes);
+                                // if(ctor == null) 
+                                // {
+                                //     il.Emit(OpCodes.Ldtoken, type);
+                                //     il.Emit(OpCodes.Call, typeof(System.Type).GetMethod("GetTypeFromHandle"));
+                                //     il.Emit(OpCodes.Call, typeof(System.Runtime.Serialization.FormatterServices).GetMethod("GetUninitializedObject"));
+                                // }
+                                // else 
+                                // {
+                                //     il.Emit(OpCodes.Newobj, ctor);
+                                // }
+                                il.CreateOneTypeToStackTop(type);
+                                il.Emit(OpCodes.Stloc, idForRetAns);
+                            },
+                            // else
+                            null
+                        );
+
+                        GenCloneInner(il, type, ref localVarInt, idForRetAns, 2);
+                    }
+                );
+            }
+
+            il.MarkLabel(lbRet);
+            {
+                il.Emit(OpCodes.Ldloc, idForRetAns);
+                il.Emit(OpCodes.Ret);
+            }
+
+            Func<T, T, T> clone = dm.CreateDelegate(typeof(Func<T, T, T>)) as Func<T, T, T>;
             return clone;
         }
 

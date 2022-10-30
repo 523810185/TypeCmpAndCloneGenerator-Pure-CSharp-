@@ -14,14 +14,16 @@ namespace W3.TypeExtension
 
         public static T CloneFrom<T>(this T to, T from)
         {
-            var cloneMethod = TypeUtility.GetTypeCloneWithReturnAndTwoParms<T>();
-            return cloneMethod(to, from);
+            // var cloneMethod = TypeUtility.GetTypeCloneWithReturnAndTwoParms<T>();
+            // return cloneMethod(to, from);
+            return TypeInnerMethodInfo.CloneWithReturnAndTwoParms(to, from);
         }
 
         public static bool CompareWith<T>(this T a, T b)
         {
-            var cmpMethod = TypeUtility.GetTypeCmp<T>();
-            return cmpMethod(a, b);
+            // var cmpMethod = TypeUtility.GetTypeCmp<T>();
+            // return cmpMethod(a, b);
+            return TypeInnerMethodInfo.Cmp(a, b);
         }
     }
 }
